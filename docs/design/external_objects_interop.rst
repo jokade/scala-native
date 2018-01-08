@@ -10,6 +10,8 @@ Only systems that can be accessed from pure C are considered (i.e. C++ classes a
 
 The analysis of required enhancements to support interop with these systems is based on the capabilities of Scala Native 0.3.6. 
 
+.. contents:: Contents
+  :depth: 3
 
 Informal C Objects
 ==================
@@ -29,7 +31,8 @@ There are two schemes for accessing the instance properties:
 - providing accessor functions for every property (this technique is utilized by libraries that
   treat instances as opaque pointers of type ``void*``).
 
-**Basic C Example**:
+C Example
+---------
 
 .. code:: C
 
@@ -48,9 +51,17 @@ There are two schemes for accessing the instance properties:
     return self->count;
   }
   
-  Counter* c = counter_new(0);
-  counter_add(c,1);
-  printf("%d\n",c->count);
+  Counter* counter_copy(Counter* self) {
+    Counter* new = (Counter*)malloc(sizeof(Counter));
+    new->count = self->count;
+    return new;
+  }
+  
+  Counter* counter1 = counter_new(0);
+  
+  Counter* counter2 = counter_clone(counter1);
+  counter_add(counter1,2);
+  printf("counter1=%d  counter2=%d\n",counter->count);
   
 **Real world examples**: GLib, Gtk+ [1]_
 
@@ -62,9 +73,10 @@ Scala, we'd like to use dot notation instead, i.e.
 
 .. code:: Scala
 
-  val counter = Counter(0)  // calls counter_new(0)
-  counter.add(2)            // calls counter_add(counter,2)
-  println(counter.count)    // access C struct
+  val counter1 = Counter(0)        // calls counter_new(0)
+  val counter2 = counter1.copy()   // calls counter_copy(counter1)
+  counter.add(2)                   // calls counter_add(counter1,2)
+  println(s"counter1=${counter1.count} counter2=${counter2.count}") // access C structs
   
 
 Since there are no type hierarchies or interface contracts, there is usually no need to define such a type in Scala.
@@ -84,6 +96,7 @@ The first wraps the reference to the external object in a plain Scala class, and
     def this(init: Int) = this(Counter.ext.counter_new(init))
     
     @inline def add(incr: Int): Int = Counter.ext.counter_add(ref,incr)
+    @inline def copy(): Counter = new Counter( Counter.ext.counter_clone(ref) )
   }
   object Counter {
     def apply(init: Int): Counter = new Counter(ext.counter_new(init))
@@ -93,7 +106,8 @@ The first wraps the reference to the external object in a plain Scala class, and
     @extern
     object ext {
       def counter_new(init: Int): Ptr[Byte] = extern
-      def counter_add(ref: Ptr[Byte], incr: Int): Int = extern
+      def counter_add(self: Ptr[Byte], incr: Int): Int = extern
+      def counter_copy(self: Ptr[Byte]): Ptr[Byte] = extern
     }
   }
 
@@ -116,13 +130,15 @@ into a ``Ptr[Byte]`` or ``Ptr[CStruct]`` whenever it is accessed:
   class Counter private() {
     @inline def count: Int = !(this.cast[Ptr[CStruct1[Int]]])._1
     @inline def add(incr: Int): Int = Counter.ext.counter_add(this.cast[Ptr[Byte]], incr)
+    @inline def copy(): Counter = Counter.ext.counter.clone(this.cast[Ptr[Byte]]).cast[Object].asInstanceOf[Counter]
   }
   object Counter {
     def apply(init: Int): Counter = ext.counter_new(init).cast[Object].asInstanceOf[Counter]
     @extern
     object ext {
       def counter_new(init: Int): Ptr[Byte] = extern
-      def counter_add(ref: Ptr[Byte], incr: Int): Int = extern
+      def counter_add(self: Ptr[Byte], incr: Int): Int = extern
+      def counter_copy(self: Ptr[Byte]): Ptr[Byte] = extern
     }
   }
   
@@ -145,12 +161,100 @@ Most obviously, vals/vars cannot be used with this pattern:
     ...
   }
 
-Advanced Use Cases
-~~~~~~~~~~~~~~~~~~
-
 Syntactic Sugar
 ~~~~~~~~~~~~~~~
 
+Advanced Use Cases
+------------------
+Mixing Scala Code with Externals
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+It should be possible to add rich extension methods to classes representing external objects, e.g.
+
+.. code:: Scala
+
+  class Counter ... {
+    var defaultIncr = 42  // not supported by pattern (2)
+    
+    def add2(): Int = add(2)  // possible with both patterns
+    def addDefault(): Int = add(defaultIncr)  // not supported with pattern (2)
+    ...
+  }
+  
+Modeling Implicit Type Hierarchies
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Although informal C object systems don't have an explicit notion of class hierarchies or interface contracts,
+they can be implicitly present due to design and conventions, or partially formalized using preprocessor macros, unions, etc.
+
+One paradigm in this category is the convention, where every object type must provide a set of functions with prescribed semantics, the canonical example being collection libraries.
+
+Suppose we have two types, one for singly-linked lists, another for doubly-linked ones. Both provide a ``size`` and ``append`` operations:
+
+.. code:: C
+
+  typedef struct {
+    ...
+  } SList;
+  
+  SList* slist_new(void);
+  SList* slist_append(SList* self, void* elem);
+  int slist_size(SList self);
+  
+  typedef struct {
+    ...
+  } DList;
+  
+  DList* dlist_new(void);
+  DList* dlist_append(DList* self, void* elem);
+  int slist_size(DList self);
+  
+  
+Of course, we'd like to abstract over both types in Scala and use them interchangeably, e.g.:
+
+.. code:: Scala
+
+  @extern(C)
+  trait Appendable {
+    def append(elem: Ptr[Byte]): Appendable = extern
+    def size: Int = extern
+  }
+  
+  @extern(C)
+  class SList extends Appendable
+  
+  @extern(C)
+  class DList extends Appendable
+  
+  
+W.r.t external bindings, this must be semantically equivalent to:
+
+.. code:: Scala
+
+  class SList ... {
+    @inline def append(elem: Ptr[Byte]): SList = SList( SList.ext.slist_append(...) )
+    @inline def size: Int = SList.ext.slist_size(...)
+  }
+  object SList {
+    @extern
+    object ext {
+      def slist_append(self: Ptr[Byte], elem: Ptr[Byte]): Ptr[Byte] = extern
+      def slist_size(self: Ptr[Byte]): Int = extern
+    }
+  }
+
+  class DList ... {
+    @inline def append(elem: Ptr[Byte]): DList = DList( DList.ext.dlist_append(...) )
+    @inline def size: Int = DList.ext.dlist_size(...)
+  }
+  object DList {
+    @extern
+    object ext {
+      def dlist_append(self: Ptr[Byte], elem: Ptr[Byte]): Ptr[Byte] = extern
+      def dlist_size(self: Ptr[Byte]): Int = extern
+    }
+  }
+  
+  
+**Real world example**: GLib
 
 GObject
 =======
