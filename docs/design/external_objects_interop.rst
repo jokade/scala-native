@@ -274,5 +274,9 @@ Design Proposals
 ================
 TBD
 
+Open Points
+===========
+- recursive data structures (https://github.com/scala-native/scala-native/issues/634)
+
 
 .. [1] although Gtk+ it is actually based on GObject, Gtk+ applications can be created without explicit use of GObject features.
