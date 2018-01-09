@@ -163,6 +163,77 @@ Most obviously, vals/vars cannot be used with this pattern:
 
 Syntactic Sugar
 ~~~~~~~~~~~~~~~
+In the previous examples we had to create the external bindings explicitly on the companion object, and then call them from the instance methods. However, since the assumption was that the external library adheres to a naming convention, we could derive the bindings automatically from the instance method signatures. For example:
+
+.. code:: Scala
+
+  @CObj
+  class Counter(init: Int) {
+    def add(incr: Int): Int = extern
+  }
+  
+could be expanded to
+
+.. code:: Scala
+
+  class Counter protected (val __ref: scalanative.native.Ptr[Byte]) {
+    import Counter.__ext;
+      def this(init: Int) = {
+        this(Counter.__ext.counter_new(init))
+      };
+      def add(incr: Int): Int = __ext.counter_add(__ref, incr)
+  };
+  object Counter {
+    @scalanative.native.extern object __ext {
+      def counter_new(init: Int): scalanative.native.Ptr[Byte] = scalanative.native.extern;
+      def counter_add(self: scala.scalanative.native.Ptr[Byte], incr: Int): Int = extern
+    }
+  };
+
+where ``@CObj`` indicates to the compiler (or an annotation macro) that this class is a binding to an external "C class".
+
+The names of the external functions can be derived from the class name (prefix ``counter``) and the method name (suffix ``add``), assuming snake case names for the C library, i.e. a Scala class named ``FooBar`` would translate into the prefix ``foo_bar``, and a Scala method name ``barFoo`` would translate into ``bar_foo``. However, if the derived names are not appropriate, we could overwrite the generated names explictly:
+
+.. code:: Scala
+
+  @CObj(prefix = "foo_")
+  class Counter {
+    @name("add")
+    def bar(incr: Int): Int = extern
+  }
+  
+would refer to the external function ``foo_add()``.
+
+Furthermore, access to the struct memebers of the underlying C reference can be facilitated if we support
+specification of the type for ``ref``:
+
+.. code:: Scala
+
+  @CObj
+  class Counter(init: Int) extends CObj.CRef[CStruct1[Int]] {
+    def count: Int = !__ref._1
+    def add(incr: Int): Int = extern
+  }
+  
+would translate to
+
+.. code:: Scala
+
+  @CObj
+  class Counter protected (val __ref: scalanative.native.Ptr[scala.scalanative.native.CStruct1[Int]]) extends CObj.CRef[CStruct1[Int]] {
+    import Counter.__ext;
+    def this(init: Int) = {
+      this(Counter.__ext.counter_new(init))
+    };
+    def count: Int = __ref._1.`unary_!`;
+    def add(incr: Int): Int = __ext.counter_add(__ref, incr)
+  };
+  object Counter {
+    @scalanative.native.extern object __ext {
+      def counter_new(init: Int): scalanative.native.Ptr[scala.scalanative.native.CStruct1[Int]] = scalanative.native.extern;
+      def counter_add(self: scalanative.native.Ptr[scala.scalanative.native.CStruct1[Int]], incr: Int): Int = extern
+    }
+  }
 
 Advanced Use Cases
 ------------------
